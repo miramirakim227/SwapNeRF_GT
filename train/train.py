@@ -469,13 +469,12 @@ class PixelNeRFTrainer(trainlib.Trainer):
                 psnr = util.psnr(rgb_psnr, gt)
                 total_psnr += psnr
 
-                import pdb 
-                pdb.set_trace()
                 # source views, gt, test_out 
                 cat = torch.cat((test_images_src[[0]], test_images_dest.reshape(-1, 3, H, W), out_src[[0]].clamp_(0., 1.), out_dest.reshape(-1, 3, H, W).clamp_(0., 1.)), dim=0)
                 cat_list.append(cat)
 
-        new_cat = torch.stack(cat_list, dim=0).reshape(-1, 3, 128, 128)
+        # new_cat = torch.stack(cat_list, dim=0).reshape(-1, 3, 128, 128)
+        new_cat = torch.cat(cat_list, dim=0)
         image_grid = make_grid(new_cat, nrow=len(cat))  # row에 들어갈 image 갯수
         save_image(image_grid, f'visuals/{args.name}/{epoch}_{batch}_out.jpg')
 
