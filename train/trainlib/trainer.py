@@ -242,6 +242,8 @@ class Trainer:
                             torch.save(
                                 self.net.state_dict(), self.default_net_state_path
                             )
+                        torch.save(self.discriminator.state_dict(), self.disc_state_path)
+                        torch.save(self.optim_d.state_dict(), self.optim_d_state_path)
                         torch.save(self.optim.state_dict(), self.optim_state_path)
                         if self.lr_scheduler is not None:
                             torch.save(
