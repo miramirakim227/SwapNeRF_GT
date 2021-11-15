@@ -345,8 +345,6 @@ class PixelNeRFTrainer(trainlib.Trainer):
             # all_rays: ((SB, ray_batch_size, 8)) <- NV images에서의 전체 rays에 SB만큼을!
             feat_out = render_par(all_rays, val_num, want_weights=True, training=False) # models.py의 forward 함수를 볼 것 
             # render par 함수 밑으로 전부 giraffe renderer로 바꾸기
-            import pdb 
-            pdb.set_trace() 
             test_out = net.neural_renderer(feat_out)          
 
             # test out 있는 여기에 self.neural_renderer 놓기 
@@ -397,80 +395,93 @@ class PixelNeRFTrainer(trainlib.Trainer):
     def vis_step(self, data, global_step, epoch, batch, idx=None):
         if "images" not in data:
             return {}
-
         if idx is None:
-            batch_idx = np.random.randint(0, data["images"].shape[0])   # 16 = batch -> (16, 251, 3, 128, 128)
+            batch_indices = np.random.randint(0, data["images"].shape[0], 4)   # 16 = batch -> (16, 251, 3, 128, 128)
         else:
             print(idx)
-            batch_idx = idx
-        # 16개 batch objects 중에 하나의 batch index를 
-        images = data["images"][batch_idx].to(device=device)  # (NV, 3, H, W)
-        poses = data["poses"][batch_idx].to(device=device)  # (NV, 4, 4)
-        focal = self.focal  # (1)
-        c = self.c
-        feat_H, feat_W = 16, 16
-        NV, _, H, W = images.shape
-        cam_rays = util.gen_rays(   # (251개의 poses에 대해서 만듦..)
-            poses, feat_W, feat_H, focal, self.z_near, self.z_far, c=c      # (251, 16, 16, 8)
-        )  # (NV, H, W, 8)
-        images_0to1 = images * 0.5 + 0.5  # (NV, 3, H, W)       # (251, 3, 128, 128)
+            batch_indices = idx
+        
+        total_psnr = 0
 
-        val_num = 3
+        cat_list = []
 
-        # curr_nviews를 4개로 잡아볼까
-        curr_nviews = nviews[torch.randint(0, len(nviews), (1,)).item()]        # curr_nviews = 1
-        views_src = np.sort(np.random.choice(NV, curr_nviews, replace=False))   # NV: 251 -> ex.views_src: 여러 이미지들 나오는디요 시발
-        view_dests = np.random.randint(0, NV - curr_nviews, val_num)  # ex. 63
-        for vs in range(curr_nviews):
-            view_dests += view_dests >= views_src[vs]
-        views_src = torch.from_numpy(views_src)
+        for batch_idx in batch_indices:
+            # 16개 batch objects 중에 하나의 batch index를 
+            images = data["images"][batch_idx].to(device=device)  # (NV, 3, H, W)
+            poses = data["poses"][batch_idx].to(device=device)  # (NV, 4, 4)
+            focal = self.focal  # (1)
+            c = self.c
+            feat_H, feat_W = 16, 16
+            NV, _, H, W = images.shape
+            cam_rays = util.gen_rays(   # (251개의 poses에 대해서 만듦..)
+                poses, feat_W, feat_H, focal, self.z_near, self.z_far, c=c      # (251, 16, 16, 8)
+            )  # (NV, H, W, 8)
+            images_0to1 = images * 0.5 + 0.5  # (NV, 3, H, W)       # (251, 3, 128, 128)
 
-        # set renderer net to eval mode
-        renderer.eval()     # <- encoder는 왜 eval() 아니지         # renderer의 parameter 찾고 여기에 2DCNN 포함되는지 확인!
-        source_views = (
-            images_0to1[views_src].repeat(val_num, 1, 1, 1)
-            .permute(0, 2, 3, 1)
-            .cpu()
-            .numpy()
-            .reshape(-1, H, W, 3)       # (3, 128, 128, 3)
-        )
+            val_num = 3
 
-        gt = images_0to1[view_dests].permute(0, 2, 3, 1).cpu().numpy().reshape(val_num, H, W, 3)     # (128, 128, 3)
-        with torch.no_grad():       # cam_rays: (NV, 16, 16, 8)
-            test_rays_dest = cam_rays[view_dests]  # (3, H, W, 8)    # -> (val_num, 16, 16, 8)
-            test_rays_src = cam_rays[views_src].repeat(val_num, 1, 1, 1)  # (H, W, 8)    # -> (16, 16, 8)
+            # curr_nviews를 4개로 잡아볼까
+            curr_nviews = nviews[torch.randint(0, len(nviews), (1,)).item()]        # curr_nviews = 1
+            views_src = np.sort(np.random.choice(NV, curr_nviews, replace=False))   # NV: 251 -> ex.views_src: 여러 이미지들 나오는디요 시발
+            view_dests = np.random.randint(0, NV - curr_nviews, val_num)  # ex. 63
+            for vs in range(curr_nviews):
+                view_dests += view_dests >= views_src[vs]
+            views_src = torch.from_numpy(views_src)
 
-            test_images_src = images[views_src].repeat(val_num, 1, 1, 1)  # (NS, 3, H, W)     # -> (3, 128, 128)
-            test_images_dest = images[view_dests] # -> # -> (val_num, 3, 128, 128)
-
-            net.encode(
-                test_images_src,  # (val_num, 3, 128, 128) 
-                poses[views_src].repeat(val_num, 1, 1),  # (val_num, 4, 4)
-                self.focal.to(device=device),   
-                c=self.c.to(device=device),
+            # set renderer net to eval mode
+            renderer.eval()     # <- encoder는 왜 eval() 아니지         # renderer의 parameter 찾고 여기에 2DCNN 포함되는지 확인!
+            source_views = (
+                images_0to1[views_src].repeat(val_num, 1, 1, 1)
+                .permute(0, 2, 3, 1)
+                .cpu()
+                .numpy()
+                .reshape(-1, H, W, 3)       # (3, 128, 128, 3)
             )
 
-            test_rays_dest = test_rays_dest.reshape(val_num, feat_H * feat_W, -1)   # -> (1, 16*16, 8)
-            test_rays_src = test_rays_src.reshape(val_num, feat_H * feat_W, -1)   # -> (1, 16*16, 8)
-                                # test_rays: 1, 16x16, 8
+            gt = images_0to1[view_dests].permute(0, 2, 3, 1).cpu().numpy().reshape(val_num, H, W, 3)     # (128, 128, 3)
+            with torch.no_grad():       # cam_rays: (NV, 16, 16, 8)
+                test_rays_dest = cam_rays[view_dests]  # (3, H, W, 8)    # -> (val_num, 16, 16, 8)
+                test_rays_src = cam_rays[views_src].repeat(val_num, 1, 1, 1)  # (H, W, 8)    # -> (16, 16, 8)
 
-            feat_test_dest = render_par(test_rays_dest, val_num = 1, want_weights=True)   # -> (1, 16*16, 8)
-            out_dest = net.neural_renderer(feat_test_dest)
+                test_images_src = images[views_src].repeat(val_num, 1, 1, 1)  # (NS, 3, H, W)     # -> (3, 128, 128)
+                test_images_dest = images[view_dests] # -> # -> (val_num, 3, 128, 128)
 
-            feat_test_src = render_par(test_rays_src, val_num = 1, want_weights=True)   # -> (1, 16*16, 8)
-            out_src = net.neural_renderer(feat_test_src)
+                net.encode(
+                    test_images_src,  # (val_num, 3, 128, 128) 
+                    poses[views_src].repeat(val_num, 1, 1),  # (val_num, 4, 4)
+                    self.focal.to(device=device),   
+                    c=self.c.to(device=device),
+                )
 
-            rgb_psnr = out_dest.cpu().numpy().reshape(val_num, H, W, 3)
+                test_rays_dest = test_rays_dest.reshape(val_num, feat_H * feat_W, -1)   # -> (1, 16*16, 8)
+                test_rays_src = test_rays_src.reshape(val_num, feat_H * feat_W, -1)   # -> (1, 16*16, 8)
+                                    # test_rays: 1, 16x16, 8
 
-        # source views, gt, test_out 
-        cat = torch.cat((test_images_src[[0]], test_images_dest.reshape(-1, 3, H, W), out_src[[0]].clamp_(0., 1.), out_dest.reshape(-1, 3, H, W).clamp_(0., 1.)), dim=0)
-        image_grid = make_grid(cat, nrow=len(cat))  # row에 들어갈 image 갯수
+                feat_test_dest = render_par(test_rays_dest, val_num = 1, want_weights=True)   # -> (1, 16*16, 8)
+                out_dest = net.neural_renderer(feat_test_dest)
+
+                feat_test_src = render_par(test_rays_src, val_num = 1, want_weights=True)   # -> (1, 16*16, 8)
+                out_src = net.neural_renderer(feat_test_src)
+
+                rgb_psnr = out_dest.cpu().numpy().reshape(val_num, H, W, 3)
+
+                # for vals calculation 
+                psnr = util.psnr(rgb_psnr, gt)
+                total_psnr += psnr
+
+                import pdb 
+                pdb.set_trace()
+                # source views, gt, test_out 
+                cat = torch.cat((test_images_src[[0]], test_images_dest.reshape(-1, 3, H, W), out_src[[0]].clamp_(0., 1.), out_dest.reshape(-1, 3, H, W).clamp_(0., 1.)), dim=0)
+                cat_list.append(cat)
+
+        new_cat = torch.stack(cat_list, dim=0).reshape(-1, 3, 128, 128)
+        image_grid = make_grid(new_cat, nrow=len(cat))  # row에 들어갈 image 갯수
         save_image(image_grid, f'visuals/{args.name}/{epoch}_{batch}_out.jpg')
 
-        # for vals calculation 
-        psnr = util.psnr(rgb_psnr, gt)
-        vals = {"psnr": psnr}
-        print("psnr", psnr)
+
+        vals = {"psnr": total_psnr / len(batch_indices)}
+        print("psnr", total_psnr / len(batch_indices))
 
         # set the renderer network back to train mode
         renderer.train()
