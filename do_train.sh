@@ -10,4 +10,4 @@
 
 # CUDA_VISIBLE_DEVICES=2 python train/train.py -c conf/exp/srn.conf -D /root/dataset2/ShapeNet/cars --lr 1e-4 --recon 50 --name swapGT --disc_lr 0.01
 
-CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name check-dim --batch_size 16
+CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name check-dim --batch_size 32
