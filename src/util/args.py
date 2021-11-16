@@ -57,6 +57,7 @@ def parse_args(
         default="visuals",
         help="visualization output directory",
     )
+
     parser.add_argument(
         "--epochs",
         type=int,
@@ -84,6 +85,7 @@ def parse_args(
 
     os.makedirs(os.path.join(args.checkpoints_path, args.name), exist_ok=True)
     os.makedirs(os.path.join(args.visual_path, args.name), exist_ok=True)
+    os.makedirs(os.path.join(args.visual_path, args.name, 'train'), exist_ok=True)
 
     PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     EXPCONF_PATH = os.path.join(PROJECT_ROOT, "expconf.conf")

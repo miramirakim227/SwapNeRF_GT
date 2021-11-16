@@ -90,6 +90,8 @@ def extra_args(parser):
 args, conf = util.args.parse_args(extra_args, training=True, default_ray_batch_size=128)
 device = util.get_cuda(args.gpu_id[0])
 
+train_vis_path = os.path.join(args.visual_path, args.name, 'train')
+
 dset, val_dset, _ = get_split_dataset(args.dataset_format, args.datadir)
 print(
     "dset z_near {}, z_far {}, lindisp {}".format(dset.z_near, dset.z_far, dset.lindisp)
@@ -228,6 +230,12 @@ class PixelNeRFTrainer(trainlib.Trainer):
             val_num = 1
             swap_featmap = render_par(swap_rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
             rgb_swap = net.neural_renderer(swap_featmap)
+
+
+            if global_step % self.vis_interval == 0:
+                image_grid = make_grid(torch.cat((all_images, rgb_fake, rgb_swap), dim=0), nrow=len(all_images))  # row에 들어갈 image 갯수
+                save_image(image_grid, f'{train_vis_path}/step_{global_step}_out.jpg')
+
 
             # neural renderer를 저 render par 프로세스 안에 넣기!
             # discriminator가 swap을 지날 예정!
