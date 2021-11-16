@@ -174,7 +174,7 @@ class PixelNeRFTrainer(trainlib.Trainer):
     def extra_save_state(self):
         torch.save(renderer.state_dict(), self.renderer_state_path)
 
-    def calc_losses(self, data, is_train=True, global_step=0, mode=None):
+    def calc_losses(self, data, epoch=None, batch=None, is_train=True, global_step=0, mode=None):
         #######################################################################################
         ################### 여기서부터 잘 집중해서 읽어보기! ray 가져오는 부분!!! ########################
         #######################################################################################
@@ -232,9 +232,10 @@ class PixelNeRFTrainer(trainlib.Trainer):
             rgb_swap = net.neural_renderer(swap_featmap)
 
 
-            if global_step % self.vis_interval == 0:
-                image_grid = make_grid(torch.cat((all_images, rgb_fake, rgb_swap), dim=0), nrow=len(all_images))  # row에 들어갈 image 갯수
-                save_image(image_grid, f'{train_vis_path}/step_{global_step}_out.jpg')
+            if mode == 'generator':
+                if global_step % self.vis_interval == 0:
+                    image_grid = make_grid(torch.cat((all_images, rgb_fake, rgb_swap), dim=0), nrow=len(all_images))  # row에 들어갈 image 갯수
+                    save_image(image_grid, f'{train_vis_path}/{epoch}_{batch}_out.jpg')
 
 
             # neural renderer를 저 render par 프로세스 안에 넣기!
@@ -368,16 +369,16 @@ class PixelNeRFTrainer(trainlib.Trainer):
             return loss_dict
 
 
-    def train_step(self, data, global_step):
+    def train_step(self, data, epoch, batch, global_step):
         # discriminator가 먼저 update 
         dict_ = {}
-        disc_loss, disc_swap, disc_real = self.calc_losses(data, is_train=True, global_step=global_step, mode='discriminator')
+        disc_loss, disc_swap, disc_real = self.calc_losses(data, epoch=epoch, batch=batch, is_train=True, global_step=global_step, mode='discriminator')
         disc_loss.backward()
         self.optim_d.step()
         self.optim_d.zero_grad()        
 
         # generator 그다음에 update 
-        gen_loss, gen_rgb, gen_swap = self.calc_losses(data, is_train=True, global_step=global_step, mode='generator')
+        gen_loss, gen_rgb, gen_swap = self.calc_losses(data, epoch=epoch, batch=batch, is_train=True, global_step=global_step, mode='generator')
         gen_loss.backward()
         self.optim.step()
         self.optim.zero_grad() 

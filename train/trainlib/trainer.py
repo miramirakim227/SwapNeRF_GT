@@ -206,7 +206,7 @@ class Trainer:
             for _ in range(self.num_epoch_repeats):
                 for data in self.train_data_loader:
                     # gan loss에 generator 담아서 update 
-                    losses = self.train_step(data, global_step=step_id)
+                    losses = self.train_step(data, epoch, batch, global_step=step_id)
                     # generator loss 
 
                     loss_str = fmt_loss_str(losses)
