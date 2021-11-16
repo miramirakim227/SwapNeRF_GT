@@ -101,6 +101,7 @@ class Trainer:
         self.start_iter_id = 0
         if args.resume:
             # TODO: backup!!
+            net.load_weights(args)
             if os.path.exists(self.optim_state_path):
                 try:
                     self.optim.load_state_dict(
