@@ -59,6 +59,13 @@ def extra_args(parser):
     )
 
     parser.add_argument(
+        "--epoch-period",
+        type=float,
+        default=1.,
+        help="period of using discriminator loss",
+    )
+
+    parser.add_argument(
         "--disc_lr",
         type=float,
         default=1.,
@@ -427,7 +434,7 @@ class PixelNeRFTrainer(trainlib.Trainer):
     def train_step(self, data, epoch, batch, global_step):
         # discriminator가 먼저 update 
         dict_ = {}
-        if epoch % 3 == 0:
+        if epoch % args.epoch_period == 0:
             disc_loss, disc_swap, disc_real = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
             self.optim_d.zero_grad()        
             disc_loss.backward()
@@ -438,7 +445,7 @@ class PixelNeRFTrainer(trainlib.Trainer):
             dict_['disc_real'] = round(disc_real, 3)
 
         # generator 그다음에 update 
-        gen_loss, gen_rgb, gen_swap = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
+        gen_loss, gen_rgb, gen_swap = self.calc_losses_train_generator(data, epoch=epoch, batch=batch, global_step=global_step)
         self.optim.zero_grad() 
         gen_loss.backward()
         self.optim.step()
