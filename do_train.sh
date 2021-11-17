@@ -12,4 +12,4 @@
 
 # CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name swap_D01 --batch_size 32 --disc_lr 0.1
 
-CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name check-disr --disc_lr 0.1 --batch_size 5
+CUDA_VISIBLE_DEVICES=1 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name G-1e-4-D-1e-2 --disc_lr 0.01 --batch_size 32

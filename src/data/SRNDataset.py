@@ -5,6 +5,7 @@ import glob
 import imageio
 import numpy as np
 from util import get_image_to_tensor_balanced, get_mask_to_tensor
+from random import randrange
 
 ##################################################################
 ################### MAKING #######################################
@@ -82,11 +83,13 @@ class SRNDataset(torch.utils.data.Dataset):
             focal, cx, cy, _ = map(float, lines[0].split())
             height, width = map(int, lines[-1].split())
 
-        all_imgs = []
-        all_poses = []
-        all_masks = []
-        all_bboxes = []
-        for rgb_path, pose_path in zip(rgb_paths, pose_paths):
+        total_len = len(rgb_paths)
+        img_idx = randrange(total_len)
+
+        if self.stage == 'train':
+            rgb_path = rgb_paths[img_idx]
+            pose_path = pose_paths[img_idx]
+
             img = imageio.imread(rgb_path)[..., :3]
             img_tensor = self.image_to_tensor(img)
             mask = (img != 255).all(axis=-1)[..., None].astype(np.uint8) * 255
@@ -109,17 +112,50 @@ class SRNDataset(torch.utils.data.Dataset):
             cmin, cmax = cnz[[0, -1]]
             bbox = torch.tensor([cmin, rmin, cmax, rmax], dtype=torch.float32)
 
-            all_imgs.append(img_tensor)
-            all_masks.append(mask_tensor)
-            all_poses.append(pose)
-            all_bboxes.append(bbox)
+            all_imgs = img_tensor
+            all_poses = pose
+            all_masks = mask_tensor
+            all_bboxes = bbox
 
-        # 50개를 쌓아버림
+        else:       # when self.stage == val
+            all_imgs = []
+            all_poses = []
+            all_masks = []
+            all_bboxes = []
+            for rgb_path, pose_path in zip(rgb_paths, pose_paths):
+                img = imageio.imread(rgb_path)[..., :3]
+                img_tensor = self.image_to_tensor(img)
+                mask = (img != 255).all(axis=-1)[..., None].astype(np.uint8) * 255
+                mask_tensor = self.mask_to_tensor(mask)
 
-        all_imgs = torch.stack(all_imgs)
-        all_poses = torch.stack(all_poses)
-        all_masks = torch.stack(all_masks)
-        all_bboxes = torch.stack(all_bboxes)
+                pose = torch.from_numpy(
+                    np.loadtxt(pose_path, dtype=np.float32).reshape(4, 4)
+                )
+                pose = pose @ self._coord_trans
+
+                rows = np.any(mask, axis=1)
+                cols = np.any(mask, axis=0)
+                rnz = np.where(rows)[0]
+                cnz = np.where(cols)[0]
+                if len(rnz) == 0:
+                    raise RuntimeError(
+                        "ERROR: Bad image at", rgb_path, "please investigate!"
+                    )
+                rmin, rmax = rnz[[0, -1]]
+                cmin, cmax = cnz[[0, -1]]
+                bbox = torch.tensor([cmin, rmin, cmax, rmax], dtype=torch.float32)
+
+                all_imgs.append(img_tensor)
+                all_masks.append(mask_tensor)
+                all_poses.append(pose)
+                all_bboxes.append(bbox)
+
+            # 50개를 쌓아버림
+
+            all_imgs = torch.stack(all_imgs)
+            all_poses = torch.stack(all_poses)
+            all_masks = torch.stack(all_masks)
+            all_bboxes = torch.stack(all_bboxes)
 
 
         if all_imgs.shape[-2:] != self.image_size:
@@ -136,7 +172,6 @@ class SRNDataset(torch.utils.data.Dataset):
             focal *= self.world_scale
             all_poses[:, :3, 3] *= self.world_scale
         focal = torch.tensor(focal, dtype=torch.float32)
-
 
         # 음... 계속 새로운 instance가 들어올 수 있도록 encoder 부분 바꿔주기 
 

@@ -183,16 +183,11 @@ class PixelNeRFTrainer(trainlib.Trainer):
             if "images" not in data:
                 return {}
 
-            total_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
-            SB, NV, _, H, W = total_images.shape      # SB: number of obj, NV: number of view     -> 4, 50, 3, 128, 128
-            total_poses = data["poses"].to(device=device)  # (SB, NV, 4, 4)
+            all_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
+            SB, _, H, W = all_images.shape      # SB: number of obj, NV: number of view     -> 4, 50, 3, 128, 128
+            all_poses = data["poses"].to(device=device)  # (SB, NV, 4, 4)
             all_focals = data["focal"]  # (SB)      # 각 batch sample마다의 focal length가 존재함 
             all_c = data.get("c")  # (SB)
-
-            image_ord = torch.randint(0, NV, (SB, 1)).to(device=device)   # ours -> 계속 nviews=1일 예정! 
-
-            all_images = util.batched_index_select_nd(total_images, image_ord).squeeze()
-            all_poses = util.batched_index_select_nd(total_poses, image_ord).squeeze()
 
             # 원래는 object for문에 껴있었는데 그냥 바로 배치 단위로 
             images_0to1 = all_images * 0.5 + 0.5
