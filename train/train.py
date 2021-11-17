@@ -182,14 +182,17 @@ class PixelNeRFTrainer(trainlib.Trainer):
             # SB: number of batches 
             if "images" not in data:
                 return {}
-            all_images = data["images"].to(device=device)  # (B, 3, H, W)   # images: 128, 128
 
-            B, _, H, W = all_images.shape   
-            all_poses = data["poses"].to(device=device)  # (B, 4, 4)
-            all_focals = data["focal"]  # (B)      # 각 batch sample마다의 focal length가 존재함 
-            all_c = data.get("c")  # (B, 2)       # 아이고.. 생각해보면 각 sample마다 f, c가 다를텐데.. <- 같다!
+            total_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
+            SB, NV, _, H, W = total_images.shape      # SB: number of obj, NV: number of view     -> 4, 50, 3, 128, 128
+            total_poses = data["poses"].to(device=device)  # (SB, NV, 4, 4)
+            all_focals = data["focal"]  # (SB)      # 각 batch sample마다의 focal length가 존재함 
+            all_c = data.get("c")  # (SB)
 
-            image_ord = torch.randint(0, 1, (B, 1))   # ours -> 계속 nviews=1일 예정! 
+            image_ord = torch.randint(0, NV, (SB, 1)).to(device=device)   # ours -> 계속 nviews=1일 예정! 
+
+            all_images = util.batched_index_select_nd(total_images, image_ord).squeeze()
+            all_poses = util.batched_index_select_nd(total_poses, image_ord).squeeze()
 
             # 원래는 object for문에 껴있었는데 그냥 바로 배치 단위로 
             images_0to1 = all_images * 0.5 + 0.5
@@ -213,7 +216,7 @@ class PixelNeRFTrainer(trainlib.Trainer):
             cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
                 all_poses, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
             )  # (NV, H, W, 8)
-            rays = cam_rays.view(B, -1, cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
+            rays = cam_rays.view(SB, -1, cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
 
             val_num = 1
             featmap = render_par(rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
@@ -225,17 +228,16 @@ class PixelNeRFTrainer(trainlib.Trainer):
             swap_cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
                 swap_rot, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
             )  # (NV, H, W, 8)
-            swap_rays = swap_cam_rays.view(B, -1, swap_cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
+            swap_rays = swap_cam_rays.view(SB, -1, swap_cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
 
             val_num = 1
             swap_featmap = render_par(swap_rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
             rgb_swap = net.neural_renderer(swap_featmap)
 
 
-            if mode == 'generator':
-                if global_step % self.vis_interval == 0:
-                    image_grid = make_grid(torch.cat((all_images, rgb_fake, rgb_swap), dim=0), nrow=len(all_images))  # row에 들어갈 image 갯수
-                    save_image(image_grid, f'{train_vis_path}/{epoch}_{batch}_out.jpg')
+            if global_step % self.vis_interval == 0:
+                image_grid = make_grid(torch.cat((all_images, rgb_fake, rgb_swap), dim=0), nrow=len(all_images))  # row에 들어갈 image 갯수
+                save_image(image_grid, f'{train_vis_path}/{epoch}_{batch}_out.jpg')
 
 
             # neural renderer를 저 render par 프로세스 안에 넣기!
@@ -374,15 +376,15 @@ class PixelNeRFTrainer(trainlib.Trainer):
         # discriminator가 먼저 update 
         dict_ = {}
         disc_loss, disc_swap, disc_real = self.calc_losses(data, epoch=epoch, batch=batch, is_train=True, global_step=global_step, mode='discriminator')
+        self.optim_d.zero_grad()        
         disc_loss.backward()
         self.optim_d.step()
-        self.optim_d.zero_grad()        
 
         # generator 그다음에 update 
         gen_loss, gen_rgb, gen_swap = self.calc_losses(data, epoch=epoch, batch=batch, is_train=True, global_step=global_step, mode='generator')
+        self.optim.zero_grad() 
         gen_loss.backward()
         self.optim.step()
-        self.optim.zero_grad() 
 
         dict_['disc_loss'] = round(disc_loss.item(), 3)
         dict_['disc_swap'] = round(disc_swap, 3)
