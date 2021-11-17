@@ -240,9 +240,9 @@ class PixelNeRFTrainer(trainlib.Trainer):
 
             # neural renderer를 저 render par 프로세스 안에 넣기!
             # discriminator가 swap을 지날 예정!
-            d_fake = self.discriminator(rgb_swap)
             loss_dict = {}
             if mode == 'generator':
+                d_fake = self.discriminator(rgb_swap)
                 rgb_loss = self.recon_loss(rgb_fake, all_images) # 아 오키. sampling된 points 갯수가 128개인가보군 
                 # net attribute으로 rotmat있는지 확인 + 예측했던 rotmat과 같은지 확인 
                 gen_swap_loss = self.compute_bce(d_fake, 1)
@@ -251,9 +251,10 @@ class PixelNeRFTrainer(trainlib.Trainer):
 
             elif mode =='discriminator':
                 d_real = self.discriminator(all_images)
+                d_fake = self.discriminator(rgb_swap.detach())
                 disc_swap_loss = self.compute_bce(d_fake, 0)
                 disc_real_loss = self.compute_bce(d_real, 1)
-                loss_disc = (disc_swap_loss * args.swap + disc_real_loss * args.swap) / 2
+                loss_disc = disc_swap_loss * args.swap + disc_real_loss * args.swap
                 return loss_disc, disc_swap_loss.item(), disc_real_loss.item()
             else:
                 pass
