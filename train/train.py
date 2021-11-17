@@ -174,31 +174,213 @@ class PixelNeRFTrainer(trainlib.Trainer):
     def extra_save_state(self):
         torch.save(renderer.state_dict(), self.renderer_state_path)
 
-    def calc_losses(self, data, epoch=None, batch=None, is_train=True, global_step=0, mode=None):
+    def calc_losses_eval(self, data, epoch=None, batch=None, global_step=0):
         #######################################################################################
         ################### 여기서부터 잘 집중해서 읽어보기! ray 가져오는 부분!!! ########################
         #######################################################################################
-        if is_train :
-            # SB: number of batches 
-            if "images" not in data:
-                return {}
-
-            all_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
-            SB, _, H, W = all_images.shape      # SB: number of obj, NV: number of view     -> 4, 50, 3, 128, 128
-            all_poses = data["poses"].to(device=device)  # (SB, NV, 4, 4)
-            all_focals = data["focal"]  # (SB)      # 각 batch sample마다의 focal length가 존재함 
-            all_c = data.get("c")  # (SB)
-
-            # 원래는 object for문에 껴있었는데 그냥 바로 배치 단위로 
-            images_0to1 = all_images * 0.5 + 0.5
-            rgb_gt_all = (
-                images_0to1.permute(0, 2, 3, 1).contiguous().reshape(-1, 3)
-            )  # (B, H, W, 3)
-
-            # feat-W, feat-H 받아야 함! 
-            feat_H = 16 # <- args로 조정 가능하도록!
-            feat_W = 16 # <- args로 조정 가능하도록!    # 아 오키 이거 volume renderer 세팅 따라가고, 다른 부분 있으면 giraffe 모듈 가져오기 
+        # SB: number of batches 
+        if "images" not in data:
+            return {}
+        all_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
+        all_poses = data["poses"].to(device=device)
         
+        SB, NV, _, H, W = all_images.shape      # SB: number of obj, NV: number of view     -> 4, 50, 3, 128, 128
+        all_focals = data["focal"]  # (SB)      # 각 batch sample마다의 focal length가 존재함 
+        all_c = data.get("c")  # (SB)
+
+        if self.use_bbox and global_step >= args.no_bbox_step:
+            self.use_bbox = False
+            print(">>> Stopped using bbox sampling @ iter", global_step)
+
+        all_rgb_gt = []
+        all_rays = []
+
+        curr_nviews = nviews[torch.randint(0, len(nviews), ()).item()]
+        if curr_nviews == 1:       # (0,) 을 batch size만큼 만들어준다!
+            image_ord = torch.randint(0, NV, (SB, 1))   # ours -> 계속 nviews=1일 예정! 
+        else: # Pass
+            image_ord = torch.empty((SB, curr_nviews), dtype=torch.long)
+
+        val_num = 5
+        ##### object마다의 Process 
+        ##### 여기서는 RGB sampling하는 과정은 아예 빼고, extrinsic을 통한 camera ray를 가져올 것 pix_inds는 필요없음 
+        for obj_idx in range(SB):       # batch 안의 index마다 pose가 다르기 때문!      # SB: 4     # meshgrid만 괜찮다면 batch 연산으로 큼지막하게 한번 가도 괜찮을듯 
+            # batch size는 작은 편, 각 sample에 대해서 처리함 
+            # 이거 자체가 하나의 batch로서 기능함 
+            # 너무 메모리가 커서 조금 샘플링 해야할 것 같기도.. 
+            indices = torch.randint(0, NV, (val_num,))      # (전체 251개의 view 중 5개 뽑기!)
+
+            # 딱 5개만 뽑아냄!
+            images = all_images[obj_idx][indices]  # (NV, 3, H, W)       # (50, 3, 128, 128)
+            poses = all_poses[obj_idx][indices]  # (NV, 4, 4)            # (50, 4, 4)        # <- multi-view rotation
+            
+            focal = self.focal
+            c = self.c
+            if curr_nviews > 1: # Pass
+                # Somewhat inefficient, don't know better way
+                image_ord[obj_idx] = torch.from_numpy(          # 배치 안의 한 샘플에 대해 5개 중에 하나 뽑기!
+                    np.random.choice(indices, curr_nviews, replace=False)       # 0부터 4중에 하나 고르기!  <- 각 batch마다 어떤 view에서 source image를 가져올지 결정!
+                )       # ex. image_ord[0] = 2 -> 0번째 샘플의 obj index는 2
+            images_0to1 = images * 0.5 + 0.5
+
+            feat_H, feat_W = 16, 16
+            # ㅇㅇ 다 넣고 봐도 될 듯. 어차피 feature field에 대해서 보는거라! 
+            cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
+                poses, feat_W, feat_H, focal, self.z_near, self.z_far, c=c        # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
+            )  # (NV, H, W, 8)
+            rgb_gt_all = images_0to1        # image는 encoder에 들어가는 그대로 넣어주면 됨
+            rgb_gt_all = (
+                rgb_gt_all.permute(0, 2, 3, 1).contiguous().reshape(-1, 3)
+            )  # (NV * H * W, 3)
+
+            # 여기선 Ray sampling을 해서 pix_inds를 얻어내려고 하는데, 우리는 Feature map을 보고 하기 때문에 
+            # pix_inds로 인덱싱해줄 대상이 없음. 그냥 이거 자체를 없애도 됨. 
+            rgb_gt = rgb_gt_all  # (ray_batch_size, 3)
+            rays = cam_rays.view(-1, cam_rays.shape[-1]).to(
+                device=device       # 그냥 어떤 resolution에 대해 생성하기 때문..
+            )  # (ray_batch_size, 8)
+
+            all_rgb_gt.append(rgb_gt)
+            all_rays.append(rays)
+
+
+        all_rgb_gt = torch.stack(all_rgb_gt)  # (SB, 5*ray_batch_size, 3)     # 5장의 이미지
+        all_rays = torch.stack(all_rays)  # (SB, 5*ray_batch_size, 8)
+
+        image_ord = image_ord.to(device)    #  single-view이기 때문에 어차피 0으로 전부 indexing 되어있음 
+        src_images = util.batched_index_select_nd(      # NS: number of samples 
+            all_images, image_ord # 모든 이미지에 대해 랜덤하게 뽑은 source image를 가져오게 됨 
+        )  # (SB, NS, 3, H, W) <- NV에서 NS로 바뀜 -> index_select_nd에 따라서 결정됨! <- ㅇㅋ 인정 어차피 한 obj 안에 50개 있으니까 
+        
+        src_poses = util.batched_index_select_nd(all_poses, image_ord)  # (SB, NS, 4, 4) <- 이 src poses를 예측해보자!
+        # 4개의 batch, 각 batch의 NS개 중 일부만 골라서 poses로 처리 <- 오키.. <- 이거는 진짜 camera poses
+        all_poses = all_images = None
+
+        # 각 batch마다 하나의 sample src image를 고름 
+        #######################################################################################
+        ################### 여기까지 잘 집중해서 읽어보기! ray 가져오는 부분!!! ########################
+        #######################################################################################
+
+        # remove 
+        ############### NeRF encoding하는 부분!!!!!!!!
+        net.encode(
+            src_images,      # batch, 1, 3, 128, 128
+            src_poses,
+            self.focal.to(device=device),   # batch
+            c=self.c.to(device=device) if all_c is not None else None,
+        )
+
+        # 하나의 source image에 대해 5개의 feature output을 만듦 -> 전체 sample에 대해서!
+        # all_rays: ((SB, ray_batch_size, 8)) <- NV images에서의 전체 rays에 SB만큼을!
+        feat_out = render_par(all_rays, val_num, want_weights=True, training=False) # models.py의 forward 함수를 볼 것 
+        # render par 함수 밑으로 전부 giraffe renderer로 바꾸기
+        test_out = net.neural_renderer(feat_out)          
+
+        # test out 있는 여기에 self.neural_renderer 놓기 
+        loss_dict = {}
+        test_out_pred = test_out.reshape(SB, -1, 3)
+
+        rgb_loss = self.recon_loss(test_out_pred, all_rgb_gt)
+
+        loss_dict["rc"] = rgb_loss.item() * args.recon
+        loss = rgb_loss
+        loss_dict["t"] = loss.item()
+
+        return loss_dict
+
+
+    def calc_losses_train_generator(self, data, epoch=None, batch=None, global_step=0):
+        #######################################################################################
+        ################### 여기서부터 잘 집중해서 읽어보기! ray 가져오는 부분!!! ########################
+        #######################################################################################
+        if "images" not in data:
+            return {}
+
+        all_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
+        SB, _, H, W = all_images.shape      # SB: number of obj, NV: number of view     -> 4, 50, 3, 128, 128
+        all_poses = data["poses"].to(device=device)  # (SB, NV, 4, 4)
+        all_focals = data["focal"]  # (SB)      # 각 batch sample마다의 focal length가 존재함 
+        all_c = data.get("c")  # (SB)
+
+        # 원래는 object for문에 껴있었는데 그냥 바로 배치 단위로 
+        images_0to1 = all_images * 0.5 + 0.5
+        rgb_gt_all = (
+            images_0to1.permute(0, 2, 3, 1).contiguous().reshape(-1, 3)
+        )  # (B, H, W, 3)
+
+        # feat-W, feat-H 받아야 함! 
+        feat_H = 16 # <- args로 조정 가능하도록!
+        feat_W = 16 # <- args로 조정 가능하도록!    # 아 오키 이거 volume renderer 세팅 따라가고, 다른 부분 있으면 giraffe 모듈 가져오기 
+
+        net.encode(     # <- encode부분은 동일하게 가져오고, forward하는 부분 좀더 신경써서 가져오기!
+            all_images,
+            all_poses,
+            self.focal.to(device=device),
+            c=self.c.to(device=device)
+        )   # encoder 결과로 self.rotmat, self.shape, self.appearance 예측됨 
+
+        ################################################
+        ########################### for generated views 
+        cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
+            all_poses, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
+        )  # (NV, H, W, 8)
+        rays = cam_rays.view(SB, -1, cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
+
+        val_num = 1
+        featmap = render_par(rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
+        rgb_fake = net.neural_renderer(featmap)
+
+        ################################################
+        ########################### for swapped views 
+        swap_rot = all_poses.flip(0)
+        swap_cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
+            swap_rot, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
+        )  # (NV, H, W, 8)
+        swap_rays = swap_cam_rays.view(SB, -1, swap_cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
+
+        val_num = 1
+        swap_featmap = render_par(swap_rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
+        rgb_swap = net.neural_renderer(swap_featmap)
+
+        if global_step % self.vis_interval == 0:
+            image_grid = make_grid(torch.cat((all_images, rgb_fake, rgb_swap), dim=0), nrow=len(all_images))  # row에 들어갈 image 갯수
+            save_image(image_grid, f'{train_vis_path}/{epoch}_{batch}_out.jpg')
+
+        # neural renderer를 저 render par 프로세스 안에 넣기!
+        # discriminator가 swap을 지날 예정!
+
+        d_fake = self.discriminator(rgb_swap)
+        rgb_loss = self.recon_loss(rgb_fake, all_images) # 아 오키. sampling된 points 갯수가 128개인가보군 
+        # net attribute으로 rotmat있는지 확인 + 예측했던 rotmat과 같은지 확인 
+        gen_swap_loss = self.compute_bce(d_fake, 1)
+        loss_gen = rgb_loss * args.recon + gen_swap_loss * args.swap
+        return loss_gen, rgb_loss.item(), gen_swap_loss.item()
+
+
+    def calc_losses_train_discriminator(self, data, epoch=None, batch=None, global_step=0):
+        #######################################################################################
+        ################### 여기서부터 잘 집중해서 읽어보기! ray 가져오는 부분!!! ########################
+        #######################################################################################
+        if "images" not in data:
+            return {}
+
+        all_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
+        SB, _, H, W = all_images.shape      # SB: number of obj, NV: number of view     -> 4, 50, 3, 128, 128
+        all_poses = data["poses"].to(device=device)  # (SB, NV, 4, 4)
+        all_focals = data["focal"]  # (SB)      # 각 batch sample마다의 focal length가 존재함 
+        all_c = data.get("c")  # (SB)
+
+        # 원래는 object for문에 껴있었는데 그냥 바로 배치 단위로 
+        images_0to1 = all_images * 0.5 + 0.5
+        rgb_gt_all = (
+            images_0to1.permute(0, 2, 3, 1).contiguous().reshape(-1, 3)
+        )  # (B, H, W, 3)
+
+        # feat-W, feat-H 받아야 함! 
+        feat_H = 16 # <- args로 조정 가능하도록!
+        feat_W = 16 # <- args로 조정 가능하도록!    # 아 오키 이거 volume renderer 세팅 따라가고, 다른 부분 있으면 giraffe 모듈 가져오기 
+
+        with torch.no_grad():
             net.encode(     # <- encode부분은 동일하게 가져오고, forward하는 부분 좀더 신경써서 가져오기!
                 all_images,
                 all_poses,
@@ -229,154 +411,25 @@ class PixelNeRFTrainer(trainlib.Trainer):
             swap_featmap = render_par(swap_rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
             rgb_swap = net.neural_renderer(swap_featmap)
 
-
-            if global_step % self.vis_interval == 0:
-                image_grid = make_grid(torch.cat((all_images, rgb_fake, rgb_swap), dim=0), nrow=len(all_images))  # row에 들어갈 image 갯수
-                save_image(image_grid, f'{train_vis_path}/{epoch}_{batch}_out.jpg')
-
-
-            # neural renderer를 저 render par 프로세스 안에 넣기!
-            # discriminator가 swap을 지날 예정!
-            loss_dict = {}
-            if mode == 'generator':
-                d_fake = self.discriminator(rgb_swap)
-                rgb_loss = self.recon_loss(rgb_fake, all_images) # 아 오키. sampling된 points 갯수가 128개인가보군 
-                # net attribute으로 rotmat있는지 확인 + 예측했던 rotmat과 같은지 확인 
-                gen_swap_loss = self.compute_bce(d_fake, 1)
-                loss_gen = rgb_loss * args.recon + gen_swap_loss * args.swap
-                return loss_gen, rgb_loss.item(), gen_swap_loss.item()
-
-            elif mode =='discriminator':
-                d_real = self.discriminator(all_images)
-                d_fake = self.discriminator(rgb_swap.detach())
-                disc_swap_loss = self.compute_bce(d_fake, 0)
-                disc_real_loss = self.compute_bce(d_real, 1)
-                loss_disc = disc_swap_loss * args.swap + disc_real_loss * args.swap
-                return loss_disc, disc_swap_loss.item(), disc_real_loss.item()
-            else:
-                pass
-        else:
-            # SB: number of batches 
-            if "images" not in data:
-                return {}
-            all_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
-            all_poses = data["poses"].to(device=device)
-            
-            SB, NV, _, H, W = all_images.shape      # SB: number of obj, NV: number of view     -> 4, 50, 3, 128, 128
-            all_focals = data["focal"]  # (SB)      # 각 batch sample마다의 focal length가 존재함 
-            all_c = data.get("c")  # (SB)
-
-            if self.use_bbox and global_step >= args.no_bbox_step:
-                self.use_bbox = False
-                print(">>> Stopped using bbox sampling @ iter", global_step)
-
-            all_rgb_gt = []
-            all_rays = []
-
-            curr_nviews = nviews[torch.randint(0, len(nviews), ()).item()]
-            if curr_nviews == 1:       # (0,) 을 batch size만큼 만들어준다!
-                image_ord = torch.randint(0, NV, (SB, 1))   # ours -> 계속 nviews=1일 예정! 
-            else: # Pass
-                image_ord = torch.empty((SB, curr_nviews), dtype=torch.long)
-
-            val_num = 5
-            ##### object마다의 Process 
-            ##### 여기서는 RGB sampling하는 과정은 아예 빼고, extrinsic을 통한 camera ray를 가져올 것 pix_inds는 필요없음 
-            for obj_idx in range(SB):       # batch 안의 index마다 pose가 다르기 때문!      # SB: 4     # meshgrid만 괜찮다면 batch 연산으로 큼지막하게 한번 가도 괜찮을듯 
-                # batch size는 작은 편, 각 sample에 대해서 처리함 
-                # 이거 자체가 하나의 batch로서 기능함 
-                # 너무 메모리가 커서 조금 샘플링 해야할 것 같기도.. 
-                indices = torch.randint(0, NV, (val_num,))      # (전체 251개의 view 중 5개 뽑기!)
-
-                # 딱 5개만 뽑아냄!
-                images = all_images[obj_idx][indices]  # (NV, 3, H, W)       # (50, 3, 128, 128)
-                poses = all_poses[obj_idx][indices]  # (NV, 4, 4)            # (50, 4, 4)        # <- multi-view rotation
-                
-                focal = self.focal
-                c = self.c
-                if curr_nviews > 1: # Pass
-                    # Somewhat inefficient, don't know better way
-                    image_ord[obj_idx] = torch.from_numpy(          # 배치 안의 한 샘플에 대해 5개 중에 하나 뽑기!
-                        np.random.choice(indices, curr_nviews, replace=False)       # 0부터 4중에 하나 고르기!  <- 각 batch마다 어떤 view에서 source image를 가져올지 결정!
-                    )       # ex. image_ord[0] = 2 -> 0번째 샘플의 obj index는 2
-                images_0to1 = images * 0.5 + 0.5
-
-                feat_H, feat_W = 16, 16
-                # ㅇㅇ 다 넣고 봐도 될 듯. 어차피 feature field에 대해서 보는거라! 
-                cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
-                    poses, feat_W, feat_H, focal, self.z_near, self.z_far, c=c        # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
-                )  # (NV, H, W, 8)
-                rgb_gt_all = images_0to1        # image는 encoder에 들어가는 그대로 넣어주면 됨
-                rgb_gt_all = (
-                    rgb_gt_all.permute(0, 2, 3, 1).contiguous().reshape(-1, 3)
-                )  # (NV * H * W, 3)
-
-                # 여기선 Ray sampling을 해서 pix_inds를 얻어내려고 하는데, 우리는 Feature map을 보고 하기 때문에 
-                # pix_inds로 인덱싱해줄 대상이 없음. 그냥 이거 자체를 없애도 됨. 
-                rgb_gt = rgb_gt_all  # (ray_batch_size, 3)
-                rays = cam_rays.view(-1, cam_rays.shape[-1]).to(
-                    device=device       # 그냥 어떤 resolution에 대해 생성하기 때문..
-                )  # (ray_batch_size, 8)
-
-                all_rgb_gt.append(rgb_gt)
-                all_rays.append(rays)
-
-
-            all_rgb_gt = torch.stack(all_rgb_gt)  # (SB, 5*ray_batch_size, 3)     # 5장의 이미지
-            all_rays = torch.stack(all_rays)  # (SB, 5*ray_batch_size, 8)
-
-            image_ord = image_ord.to(device)    #  single-view이기 때문에 어차피 0으로 전부 indexing 되어있음 
-            src_images = util.batched_index_select_nd(      # NS: number of samples 
-                all_images, image_ord # 모든 이미지에 대해 랜덤하게 뽑은 source image를 가져오게 됨 
-            )  # (SB, NS, 3, H, W) <- NV에서 NS로 바뀜 -> index_select_nd에 따라서 결정됨! <- ㅇㅋ 인정 어차피 한 obj 안에 50개 있으니까 
-            
-            src_poses = util.batched_index_select_nd(all_poses, image_ord)  # (SB, NS, 4, 4) <- 이 src poses를 예측해보자!
-            # 4개의 batch, 각 batch의 NS개 중 일부만 골라서 poses로 처리 <- 오키.. <- 이거는 진짜 camera poses
-            all_poses = all_images = None
-
-            # 각 batch마다 하나의 sample src image를 고름 
-            #######################################################################################
-            ################### 여기까지 잘 집중해서 읽어보기! ray 가져오는 부분!!! ########################
-            #######################################################################################
-
-            # remove 
-            ############### NeRF encoding하는 부분!!!!!!!!
-            net.encode(
-                src_images,      # batch, 1, 3, 128, 128
-                src_poses,
-                self.focal.to(device=device),   # batch
-                c=self.c.to(device=device) if all_c is not None else None,
-            )
-
-            # 하나의 source image에 대해 5개의 feature output을 만듦 -> 전체 sample에 대해서!
-            # all_rays: ((SB, ray_batch_size, 8)) <- NV images에서의 전체 rays에 SB만큼을!
-            feat_out = render_par(all_rays, val_num, want_weights=True, training=False) # models.py의 forward 함수를 볼 것 
-            # render par 함수 밑으로 전부 giraffe renderer로 바꾸기
-            test_out = net.neural_renderer(feat_out)          
-
-            # test out 있는 여기에 self.neural_renderer 놓기 
-            loss_dict = {}
-            test_out_pred = test_out.reshape(SB, -1, 3)
-
-            rgb_loss = self.recon_loss(test_out_pred, all_rgb_gt)
-
-            loss_dict["rc"] = rgb_loss.item() * args.recon
-            loss = rgb_loss
-            loss_dict["t"] = loss.item()
-
-            return loss_dict
-
+        # neural renderer를 저 render par 프로세스 안에 넣기!
+        # discriminator가 swap을 지날 예정!
+        d_real = self.discriminator(all_images)
+        d_fake = self.discriminator(rgb_swap.detach())
+        disc_swap_loss = self.compute_bce(d_fake, 0)
+        disc_real_loss = self.compute_bce(d_real, 1)
+        loss_disc = disc_swap_loss * args.swap + disc_real_loss * args.swap
+        return loss_disc, disc_swap_loss.item(), disc_real_loss.item()
 
     def train_step(self, data, epoch, batch, global_step):
         # discriminator가 먼저 update 
         dict_ = {}
-        disc_loss, disc_swap, disc_real = self.calc_losses(data, epoch=epoch, batch=batch, is_train=True, global_step=global_step, mode='discriminator')
+        disc_loss, disc_swap, disc_real = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
         self.optim_d.zero_grad()        
         disc_loss.backward()
         self.optim_d.step()
 
         # generator 그다음에 update 
-        gen_loss, gen_rgb, gen_swap = self.calc_losses(data, epoch=epoch, batch=batch, is_train=True, global_step=global_step, mode='generator')
+        gen_loss, gen_rgb, gen_swap = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
         self.optim.zero_grad() 
         gen_loss.backward()
         self.optim.step()
@@ -393,7 +446,7 @@ class PixelNeRFTrainer(trainlib.Trainer):
 
     def eval_step(self, data, global_step):
         renderer.eval()
-        losses = self.calc_losses(data, is_train=False, global_step=global_step)
+        losses = self.calc_losses_eval(data, global_step=global_step)
         renderer.train()
         return losses
 
