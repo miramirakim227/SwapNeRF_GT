@@ -348,6 +348,8 @@ class PixelNeRFTrainer(trainlib.Trainer):
 
         # neural renderer를 저 render par 프로세스 안에 넣기!
         # discriminator가 swap을 지날 예정!
+        for p in self.discriminator.parameters():
+            p.requires_grad_(False)
 
         d_fake = self.discriminator(rgb_swap)
         rgb_loss = self.recon_loss(rgb_fake, all_images) # 아 오키. sampling된 points 갯수가 128개인가보군 
@@ -411,6 +413,8 @@ class PixelNeRFTrainer(trainlib.Trainer):
             swap_featmap = render_par(swap_rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
             rgb_swap = net.neural_renderer(swap_featmap)
 
+        for p in self.discriminator.parameters():
+            p.requires_grad_(True)
         # neural renderer를 저 render par 프로세스 안에 넣기!
         # discriminator가 swap을 지날 예정!
         d_real = self.discriminator(all_images)
@@ -423,20 +427,21 @@ class PixelNeRFTrainer(trainlib.Trainer):
     def train_step(self, data, epoch, batch, global_step):
         # discriminator가 먼저 update 
         dict_ = {}
-        disc_loss, disc_swap, disc_real = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
-        self.optim_d.zero_grad()        
-        disc_loss.backward()
-        self.optim_d.step()
+        if epoch % 3 == 0:
+            disc_loss, disc_swap, disc_real = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
+            self.optim_d.zero_grad()        
+            disc_loss.backward()
+            self.optim_d.step()
+
+            dict_['disc_loss'] = round(disc_loss.item(), 3)
+            dict_['disc_swap'] = round(disc_swap, 3)
+            dict_['disc_real'] = round(disc_real, 3)
 
         # generator 그다음에 update 
         gen_loss, gen_rgb, gen_swap = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
         self.optim.zero_grad() 
         gen_loss.backward()
         self.optim.step()
-
-        dict_['disc_loss'] = round(disc_loss.item(), 3)
-        dict_['disc_swap'] = round(disc_swap, 3)
-        dict_['disc_real'] = round(disc_real, 3)
 
         dict_['gen_loss'] = round(gen_loss.item(), 3)
         dict_['gen_rgb'] = round(gen_rgb, 3)
