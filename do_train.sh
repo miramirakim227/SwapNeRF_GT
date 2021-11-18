@@ -13,10 +13,12 @@
 # CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name swap_D01 --batch_size 32 --disc_lr 0.1
 
 # vis 
-# CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name epoch3-G-1e-4-D-1e-2 --disc_lr 0.01 --batch_size 16 --epoch-period 3
+CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-5 --recon 10 --name epoch3-1e-5-recon10-D-1e-2 --disc_lr 0.01 --batch_size 16 --epoch-period 3
 
 # epoch3
 # CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name epoch3-G-1e-4-D-1e-1 --disc_lr 0.1 --batch_size 16 --epoch-period 3
 
+CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-5 --recon 20 --name epoch3-1e-5-recon20-D-1e-2 --disc_lr 0.01 --batch_size 16 --epoch-period 3
+
 # check model weight update 
-CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-4 --recon 50 --name epoch3-G-1e-4-D-1 --disc_lr 1 --batch_size 2 --epoch-period 1
+CUDA_VISIBLE_DEVICES=0 python train/train.py -c conf/exp/srn.conf -D /root/project/ShapeNet/cars --lr 1e-5 --recon 15 --name epoch3-1e-5-recon15-D-1e-2 --disc_lr 0.01 --batch_size 16 --epoch-period 3

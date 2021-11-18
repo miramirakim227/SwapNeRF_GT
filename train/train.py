@@ -394,16 +394,16 @@ class PixelNeRFTrainer(trainlib.Trainer):
             c=self.c.to(device=device)
         )   # encoder 결과로 self.rotmat, self.shape, self.appearance 예측됨 
 
-        ################################################
-        ########################### for generated views 
-        cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
-            all_poses, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
-        )  # (NV, H, W, 8)
-        rays = cam_rays.view(SB, -1, cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
+        # ################################################
+        # ########################### for generated views 
+        # cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
+        #     all_poses, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
+        # )  # (NV, H, W, 8)
+        # rays = cam_rays.view(SB, -1, cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
 
-        val_num = 1
-        featmap = render_par(rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
-        rgb_fake = net.neural_renderer(featmap)
+        # val_num = 1
+        # featmap = render_par(rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
+        # rgb_fake = net.neural_renderer(featmap)
 
         ################################################
         ########################### for swapped views 
@@ -436,14 +436,15 @@ class PixelNeRFTrainer(trainlib.Trainer):
         # discriminator 
         # name conv_out.weight | param torch.Size([1, 512, 4, 4])   [0, 0, 0] -> [0.0052, 0.0011, 0.0091, 0.0003]
         # ([0.0052, 0.0011, 0.0091, 0.0003], device='cuda:0', <- 얘는 왜 안변해..? 
-        disc_loss, disc_swap, disc_real = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
-        self.optim_d.zero_grad()        
-        disc_loss.backward()
-        self.optim_d.step()
+        if epoch % args.epoch_period == 0:
+            disc_loss, disc_swap, disc_real = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
+            self.optim_d.zero_grad()        
+            disc_loss.backward()
+            self.optim_d.step()
 
-        dict_['disc_loss'] = round(disc_loss.item(), 3)
-        dict_['disc_swap'] = round(disc_swap.item(), 3)
-        dict_['disc_real'] = round(disc_real.item(), 3)
+            dict_['disc_loss'] = round(disc_loss.item(), 3)
+            dict_['disc_swap'] = round(disc_swap.item(), 3)
+            dict_['disc_real'] = round(disc_real.item(), 3)
 
         # name neural_renderer.conv_rgb.3.weight : tensor([-0.0322, -0.0191,  0.0099], device='cuda:0', grad_fn=<SelectBackward0>)  <- 안바뀜 
 
