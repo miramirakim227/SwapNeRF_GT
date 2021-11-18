@@ -6,6 +6,7 @@ import tqdm
 import warnings
 import sys
 import os
+import logging 
 
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src"))
@@ -211,15 +212,7 @@ class Trainer:
 
                     loss_str = fmt_loss_str(losses)
                     if batch % self.print_interval == 0:
-                        print(
-                            "E",
-                            epoch,
-                            "B",
-                            batch,
-                            loss_str,
-                            " lr",
-                            self.optim.param_groups[0]["lr"],
-                        )
+                        print(f"E {epoch} B {batch} {loss_str} lr {self.optim.param_groups[0]['lr']}")
 
                     if batch % self.eval_interval == 0:
                         test_data = next(test_data_iter)
@@ -233,8 +226,7 @@ class Trainer:
                         self.writer.add_scalars(
                             "test", test_losses, global_step=step_id
                         )
-                        print("*** Eval:", "E", epoch, "B", batch, test_loss_str, " lr")
-
+                        print(f"*** Eval: E {epoch} B {batch} {test_loss_str}")
                     if batch % self.save_interval == 0 and (epoch > 0 or batch > 0):
                         print("saving")
                         if self.managed_weight_saving:

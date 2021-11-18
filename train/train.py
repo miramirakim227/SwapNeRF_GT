@@ -26,6 +26,8 @@ from torchvision.utils import save_image, make_grid
 
 warnings.filterwarnings(action='ignore')
 
+
+
 def extra_args(parser):
     parser.add_argument(
         "--batch_size", "-B", type=int, default=32, help="Object batch size ('SB')"
@@ -208,7 +210,7 @@ class PixelNeRFTrainer(trainlib.Trainer):
         else: # Pass
             image_ord = torch.empty((SB, curr_nviews), dtype=torch.long)
 
-        val_num = 5
+        val_num = 4
         ##### object마다의 Process 
         ##### 여기서는 RGB sampling하는 과정은 아예 빼고, extrinsic을 통한 camera ray를 가져올 것 pix_inds는 필요없음 
         for obj_idx in range(SB):       # batch 안의 index마다 pose가 다르기 때문!      # SB: 4     # meshgrid만 괜찮다면 batch 연산으로 큼지막하게 한번 가도 괜찮을듯 
@@ -355,15 +357,12 @@ class PixelNeRFTrainer(trainlib.Trainer):
 
         # neural renderer를 저 render par 프로세스 안에 넣기!
         # discriminator가 swap을 지날 예정!
-        for p in self.discriminator.parameters():
-            p.requires_grad_(False)
-
         d_fake = self.discriminator(rgb_swap)
         rgb_loss = self.recon_loss(rgb_fake, all_images) # 아 오키. sampling된 points 갯수가 128개인가보군 
         # net attribute으로 rotmat있는지 확인 + 예측했던 rotmat과 같은지 확인 
         gen_swap_loss = self.compute_bce(d_fake, 1)
         loss_gen = rgb_loss * args.recon + gen_swap_loss * args.swap
-        return loss_gen, rgb_loss.item(), gen_swap_loss.item()
+        return loss_gen, rgb_loss, gen_swap_loss
 
 
     def calc_losses_train_discriminator(self, data, epoch=None, batch=None, global_step=0):
@@ -388,40 +387,36 @@ class PixelNeRFTrainer(trainlib.Trainer):
         # feat-W, feat-H 받아야 함! 
         feat_H = 16 # <- args로 조정 가능하도록!
         feat_W = 16 # <- args로 조정 가능하도록!    # 아 오키 이거 volume renderer 세팅 따라가고, 다른 부분 있으면 giraffe 모듈 가져오기 
+        net.encode(     # <- encode부분은 동일하게 가져오고, forward하는 부분 좀더 신경써서 가져오기!
+            all_images,
+            all_poses,
+            self.focal.to(device=device),
+            c=self.c.to(device=device)
+        )   # encoder 결과로 self.rotmat, self.shape, self.appearance 예측됨 
 
-        with torch.no_grad():
-            net.encode(     # <- encode부분은 동일하게 가져오고, forward하는 부분 좀더 신경써서 가져오기!
-                all_images,
-                all_poses,
-                self.focal.to(device=device),
-                c=self.c.to(device=device)
-            )   # encoder 결과로 self.rotmat, self.shape, self.appearance 예측됨 
+        ################################################
+        ########################### for generated views 
+        cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
+            all_poses, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
+        )  # (NV, H, W, 8)
+        rays = cam_rays.view(SB, -1, cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
 
-            ################################################
-            ########################### for generated views 
-            cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
-                all_poses, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
-            )  # (NV, H, W, 8)
-            rays = cam_rays.view(SB, -1, cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
+        val_num = 1
+        featmap = render_par(rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
+        rgb_fake = net.neural_renderer(featmap)
 
-            val_num = 1
-            featmap = render_par(rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
-            rgb_fake = net.neural_renderer(featmap)
+        ################################################
+        ########################### for swapped views 
+        swap_rot = all_poses.flip(0)
+        swap_cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
+            swap_rot, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
+        )  # (NV, H, W, 8)
+        swap_rays = swap_cam_rays.view(SB, -1, swap_cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
 
-            ################################################
-            ########################### for swapped views 
-            swap_rot = all_poses.flip(0)
-            swap_cam_rays = util.gen_rays(       # 여기서의 W, H 사이즈는 output target feature image의 resolution이어야 함!
-                swap_rot, feat_W, feat_H, self.focal, self.z_near, self.z_far, self.c       # poses에 해당하는 부분이 extrinsic으로 잘 반영되고 있음..!
-            )  # (NV, H, W, 8)
-            swap_rays = swap_cam_rays.view(SB, -1, swap_cam_rays.shape[-1]).to(device=device)      # (batch * num_ray * num_points, 8)
+        val_num = 1
+        swap_featmap = render_par(swap_rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
+        rgb_swap = net.neural_renderer(swap_featmap)
 
-            val_num = 1
-            swap_featmap = render_par(swap_rays, val_num, want_weights=True, training=True,) # <-outputs.toDict()의 결과 
-            rgb_swap = net.neural_renderer(swap_featmap)
-
-        for p in self.discriminator.parameters():
-            p.requires_grad_(True)
         # neural renderer를 저 render par 프로세스 안에 넣기!
         # discriminator가 swap을 지날 예정!
         d_real = self.discriminator(all_images)
@@ -429,20 +424,29 @@ class PixelNeRFTrainer(trainlib.Trainer):
         disc_swap_loss = self.compute_bce(d_fake, 0)
         disc_real_loss = self.compute_bce(d_real, 1)
         loss_disc = disc_swap_loss * args.swap + disc_real_loss * args.swap
-        return loss_disc, disc_swap_loss.item(), disc_real_loss.item()
+        return loss_disc, disc_swap_loss, disc_real_loss
 
     def train_step(self, data, epoch, batch, global_step):
         # discriminator가 먼저 update 
         dict_ = {}
-        if epoch % args.epoch_period == 0:
-            disc_loss, disc_swap, disc_real = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
-            self.optim_d.zero_grad()        
-            disc_loss.backward()
-            self.optim_d.step()
+        # generator 
+        # dict(net.named_parameters())["neural_renderer.conv_rgb.3.weight"][0,0,0]
+        # name neural_renderer.conv_rgb.3.weight | param torch.Size([3, 32, 3, 3])  -> [-0.0322, -0.0191,  0.0099]
 
-            dict_['disc_loss'] = round(disc_loss.item(), 3)
-            dict_['disc_swap'] = round(disc_swap, 3)
-            dict_['disc_real'] = round(disc_real, 3)
+        # discriminator 
+        # name conv_out.weight | param torch.Size([1, 512, 4, 4])   [0, 0, 0] -> [0.0052, 0.0011, 0.0091, 0.0003]
+        # ([0.0052, 0.0011, 0.0091, 0.0003], device='cuda:0', <- 얘는 왜 안변해..? 
+        disc_loss, disc_swap, disc_real = self.calc_losses_train_discriminator(data, epoch=epoch, batch=batch, global_step=global_step)
+        self.optim_d.zero_grad()        
+        disc_loss.backward()
+        self.optim_d.step()
+
+        dict_['disc_loss'] = round(disc_loss.item(), 3)
+        dict_['disc_swap'] = round(disc_swap.item(), 3)
+        dict_['disc_real'] = round(disc_real.item(), 3)
+
+        # name neural_renderer.conv_rgb.3.weight : tensor([-0.0322, -0.0191,  0.0099], device='cuda:0', grad_fn=<SelectBackward0>)  <- 안바뀜 
+
 
         # generator 그다음에 update 
         gen_loss, gen_rgb, gen_swap = self.calc_losses_train_generator(data, epoch=epoch, batch=batch, global_step=global_step)
@@ -450,9 +454,12 @@ class PixelNeRFTrainer(trainlib.Trainer):
         gen_loss.backward()
         self.optim.step()
 
+        # tensor([-0.0321, -0.0190,  0.0100], device='cuda:0', grad_fn=<SelectBackward0>) <- 바뀜 
+        # tensor([0.0052, 0.0011, 0.0091, 0.0003], device='cuda:0') <- 안바뀜 <- discriminator가 학습이 안되고 있음 
+
         dict_['gen_loss'] = round(gen_loss.item(), 3)
-        dict_['gen_rgb'] = round(gen_rgb, 3)
-        dict_['gen_swap'] = round(gen_swap, 3)
+        dict_['gen_rgb'] = round(gen_rgb.item(), 3)
+        dict_['gen_swap'] = round(gen_swap.item(), 3)
 
         return dict_
 

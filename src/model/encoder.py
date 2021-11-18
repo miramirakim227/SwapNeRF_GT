@@ -102,7 +102,6 @@ class SpatialEncoder(nn.Module):
         '''
         # input resolution: (128, 128)
         x = x.to(device=self.latent.device)
-
         x = self.model.conv1(x)
         x = self.model.bn1(x)
         x = self.model.relu(x)
